@@ -18,53 +18,53 @@ import java.nio.file.Files;
 @Data
 public class InputConfiguration {
 
-	private String inputPath = "data" + File.separator + "TPCH";
-	private boolean fileHasHeader = true;
-	private Charset charset = StandardCharsets.UTF_8;
-	private char valueSeparator = ';';
-	private char valueQuote = '"';
-	private char valueEscape = '\\';
-	private boolean valueStrictQuotes = false;
-	private boolean valueIgnoreLeadingWhitespace = false;
+    private String inputPath = "data" + File.separator + "TPCH";
+    private boolean fileHasHeader = true;
+    private Charset charset = StandardCharsets.UTF_8;
+    private char valueSeparator = ';';
+    private char valueQuote = '"';
+    private char valueEscape = '\\';
+    private boolean valueStrictQuotes = false;
+    private boolean valueIgnoreLeadingWhitespace = false;
 
-	public void update(CommandMaster commandMaster) {
-		this.inputPath = commandMaster.inputPath;
-		this.fileHasHeader = commandMaster.fileHasHeader;
-		this.charset = commandMaster.charset;
-		this.valueSeparator = commandMaster.attributeSeparator;
-		this.valueQuote = commandMaster.attributeQuote;
-		this.valueEscape = commandMaster.attributeEscape;
-		this.valueStrictQuotes = commandMaster.attributeStrictQuotes;
-		this.valueIgnoreLeadingWhitespace = commandMaster.attributeIgnoreLeadingWhitespace;
-	}
+    public void update(CommandMaster commandMaster) {
+        this.inputPath = commandMaster.inputPath;
+        this.fileHasHeader = commandMaster.fileHasHeader;
+        this.charset = commandMaster.charset;
+        this.valueSeparator = commandMaster.attributeSeparator;
+        this.valueQuote = commandMaster.attributeQuote;
+        this.valueEscape = commandMaster.attributeEscape;
+        this.valueStrictQuotes = commandMaster.attributeStrictQuotes;
+        this.valueIgnoreLeadingWhitespace = commandMaster.attributeIgnoreLeadingWhitespace;
+    }
 
-	public File[] getInputFiles() {
-		return new File(this.inputPath).listFiles();
-	}
+    public File[] getInputFiles() {
+        return new File(this.inputPath).listFiles();
+    }
 
-	public CSVReader createCSVReader(File inputFile) throws IOException {
-		CSVParser parser = new CSVParserBuilder()
-				.withSeparator(this.valueSeparator)
-				.withQuoteChar(this.valueQuote)
-				.withEscapeChar(this.valueEscape)
-				.withStrictQuotes(this.valueStrictQuotes)
-				.withIgnoreLeadingWhiteSpace(this.valueIgnoreLeadingWhitespace)
-				.withFieldAsNull(CSVReaderNullFieldIndicator.EMPTY_SEPARATORS)
-				.build();
+    public CSVReader createCSVReader(File inputFile) throws IOException {
+        CSVParser parser = new CSVParserBuilder()
+                .withSeparator(this.valueSeparator)
+                .withQuoteChar(this.valueQuote)
+                .withEscapeChar(this.valueEscape)
+                .withStrictQuotes(this.valueStrictQuotes)
+                .withIgnoreLeadingWhiteSpace(this.valueIgnoreLeadingWhitespace)
+                .withFieldAsNull(CSVReaderNullFieldIndicator.EMPTY_SEPARATORS)
+                .build();
 
-		BufferedReader buffer = Files.newBufferedReader(inputFile.toPath(), this.charset);
-		return new CSVReaderBuilder(buffer).withCSVParser(parser).build();
-	}
+        BufferedReader buffer = Files.newBufferedReader(inputFile.toPath(), this.charset);
+        return new CSVReaderBuilder(buffer).withCSVParser(parser).build();
+    }
 
-	public String[] getHeader(File inputFile) throws IOException, CsvValidationException {
-		CSVReader reader = this.createCSVReader(inputFile);
+    public String[] getHeader(File inputFile) throws IOException, CsvValidationException {
+        CSVReader reader = this.createCSVReader(inputFile);
 
-		String[] line = reader.readNext();
-		reader.close();
+        String[] line = reader.readNext();
+        reader.close();
 
-		if (!this.fileHasHeader)
-			for (int i = 0; i < line.length; i++)
-				line[i] = "Attr_" + (i + 1);
-		return line;
-	}
+        if (!this.fileHasHeader)
+            for (int i = 0; i < line.length; i++)
+                line[i] = "Attr_" + (i + 1);
+        return line;
+    }
 }

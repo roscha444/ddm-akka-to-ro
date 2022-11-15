@@ -4,13 +4,13 @@ import de.ddm.configuration.SystemConfiguration;
 
 public class SystemConfigurationSingleton {
 
-	private static SystemConfiguration singleton = new SystemConfiguration();
+    private static SystemConfiguration singleton = new SystemConfiguration();
 
-	public static SystemConfiguration get() {
-		return singleton;
-	}
+    public static SystemConfiguration get() {
+        return singleton;
+    }
 
-	public static void set(SystemConfiguration instance) {
-		singleton = instance;
-	}
+    public static void set(SystemConfiguration instance) {
+        singleton = instance;
+    }
 }
