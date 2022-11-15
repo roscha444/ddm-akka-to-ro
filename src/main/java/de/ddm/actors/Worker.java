@@ -18,61 +18,61 @@ import java.util.List;
 
 public class Worker extends AbstractBehavior<Worker.Message> {
 
-	////////////////////
-	// Actor Messages //
-	////////////////////
+    ////////////////////
+    // Actor Messages //
+    ////////////////////
 
-	public interface Message extends AkkaSerializable {
-	}
+    public interface Message extends AkkaSerializable {
+    }
 
-	@NoArgsConstructor
-	public static class ShutdownMessage implements Message {
-		private static final long serialVersionUID = 7516129288777469221L;
-	}
+    @NoArgsConstructor
+    public static class ShutdownMessage implements Message {
+        private static final long serialVersionUID = 7516129288777469221L;
+    }
 
-	////////////////////////
-	// Actor Construction //
-	////////////////////////
+    ////////////////////////
+    // Actor Construction //
+    ////////////////////////
 
-	public static final String DEFAULT_NAME = "worker";
+    public static final String DEFAULT_NAME = "worker";
 
-	public static Behavior<Message> create() {
-		return Behaviors.setup(Worker::new);
-	}
+    public static Behavior<Message> create() {
+        return Behaviors.setup(Worker::new);
+    }
 
-	private Worker(ActorContext<Message> context) {
-		super(context);
-		Reaper.watchWithDefaultReaper(this.getContext().getSelf());
+    private Worker(ActorContext<Message> context) {
+        super(context);
+        Reaper.watchWithDefaultReaper(this.getContext().getSelf());
 
-		final int numWorkers = SystemConfigurationSingleton.get().getNumWorkers();
+        final int numWorkers = SystemConfigurationSingleton.get().getNumWorkers();
 
-		this.workers = new ArrayList<>(numWorkers);
-		for (int id = 0; id < numWorkers; id++)
-			this.workers.add(context.spawn(DependencyWorker.create(), DependencyWorker.DEFAULT_NAME + "_" + id, DispatcherSelector.fromConfig("akka.worker-pool-dispatcher")));
-	}
+        this.workers = new ArrayList<>(numWorkers);
+        for (int id = 0; id < numWorkers; id++)
+            this.workers.add(context.spawn(DependencyWorker.create(), DependencyWorker.DEFAULT_NAME + "_" + id, DispatcherSelector.fromConfig("akka.worker-pool-dispatcher")));
+    }
 
-	/////////////////
-	// Actor State //
-	/////////////////
+    /////////////////
+    // Actor State //
+    /////////////////
 
-	final List<ActorRef<DependencyWorker.Message>> workers;
+    final List<ActorRef<DependencyWorker.Message>> workers;
 
-	////////////////////
-	// Actor Behavior //
-	////////////////////
+    ////////////////////
+    // Actor Behavior //
+    ////////////////////
 
-	@Override
-	public Receive<Message> createReceive() {
-		return newReceiveBuilder()
-				.onMessage(ShutdownMessage.class, this::handle)
-				.build();
-	}
+    @Override
+    public Receive<Message> createReceive() {
+        return newReceiveBuilder()
+                .onMessage(ShutdownMessage.class, this::handle)
+                .build();
+    }
 
-	private Behavior<Message> handle(ShutdownMessage message) {
-		// If we expect the system to still be active when the a ShutdownMessage is issued,
-		// we should propagate this ShutdownMessage to all active child actors so that they
-		// can end their protocols in a clean way. Simply stopping this actor also stops all
-		// child actors, but in a hard way!
-		return Behaviors.stopped();
-	}
+    private Behavior<Message> handle(ShutdownMessage message) {
+        // If we expect the system to still be active when the a ShutdownMessage is issued,
+        // we should propagate this ShutdownMessage to all active child actors so that they
+        // can end their protocols in a clean way. Simply stopping this actor also stops all
+        // child actors, but in a hard way!
+        return Behaviors.stopped();
+    }
 }
