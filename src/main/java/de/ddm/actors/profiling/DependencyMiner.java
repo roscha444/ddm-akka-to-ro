@@ -127,7 +127,8 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
     private List<String[]> batchWhichHaveToProcess;
 
-    List<WorkDTO> combinations = new ArrayList();
+    List<WorkDTO> combinations = new ArrayList<>();
+    List<WorkDTO> crossCombinations = new ArrayList<>();
 
     ////////////////////
     // Actor Behavior //
@@ -183,6 +184,15 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
             for (int ia = 0; ia < message.getBatch().size(); ia++) {
                 colOne.add(message.getBatch().get(ia)[i]);
             }
+
+            for (WorkDTO workDTO : crossCombinations) {
+                if (!workDTO.getFirstHeader().equals(headerLine[i])) {
+                    combinations.add(new WorkDTO(inputFiles[message.getId()], headerLine[i], colOne, workDTO.getFirstFile(), workDTO.getFirstHeader(), workDTO.getFirstAttributes()));
+                    combinations.add(new WorkDTO(workDTO.getFirstFile(), workDTO.getFirstHeader(), workDTO.getFirstAttributes(), inputFiles[message.getId()], headerLine[i], colOne));
+                }
+            }
+
+            crossCombinations.add(new WorkDTO(inputFiles[message.getId()], headerLine[i], colOne, null, null, null));
 
             for (int j = 0; j < headerLine.length; j++) {
 

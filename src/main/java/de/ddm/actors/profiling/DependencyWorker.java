@@ -89,7 +89,7 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
     }
 
     private Behavior<Message> handle(TaskMessage message) {
-        this.getContext().getLog().info("Working!");
+        //this.getContext().getLog().info("Working!");
 
         boolean result = new HashSet<>(message.getWorkDTO().getFirstAttributes()).containsAll(message.getWorkDTO().getSecondAttributes());
 
