@@ -9,11 +9,12 @@ import akka.actor.typed.javadsl.Receive;
 import akka.actor.typed.receptionist.Receptionist;
 import de.ddm.actors.patterns.LargeMessageProxy;
 import de.ddm.serialization.AkkaSerializable;
+import de.ddm.structures.WorkDTO;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 
-import java.util.Random;
+import java.util.HashSet;
 import java.util.Set;
 
 public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message> {
@@ -40,6 +41,7 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
         private static final long serialVersionUID = -4667745204456518160L;
         ActorRef<LargeMessageProxy.Message> dependencyMinerLargeMessageProxy;
         int task;
+        WorkDTO workDTO;
     }
 
     ////////////////////////
@@ -87,17 +89,11 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
     }
 
     private Behavior<Message> handle(TaskMessage message) {
-        this.getContext().getLog().info("Working!");
-        // I should probably know how to solve this task, but for now I just pretend some work...
- 
-        int result = message.getTask();
-        long time = System.currentTimeMillis();
-        Random rand = new Random();
-        int runtime = (rand.nextInt(2) + 2) * 1000;
-        while (System.currentTimeMillis() - time < runtime)
-            result = ((int) Math.abs(Math.sqrt(result)) * result) % 1334525;
+        //this.getContext().getLog().info("Working!");
 
-        LargeMessageProxy.LargeMessage completionMessage = new DependencyMiner.CompletionMessage(this.getContext().getSelf(), result);
+        boolean result = new HashSet<>(message.getWorkDTO().getFirstAttributes()).containsAll(message.getWorkDTO().getSecondAttributes());
+
+        LargeMessageProxy.LargeMessage completionMessage = new DependencyMiner.CompletionMessage(this.getContext().getSelf(), result, new String[]{message.getWorkDTO().getFirstHeader()}, new String[]{message.getWorkDTO().getSecondHeader()}, message.getWorkDTO().getFirstFile(), message.getWorkDTO().getSecondFile());
         this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(completionMessage, message.getDependencyMinerLargeMessageProxy()));
 
         return this;

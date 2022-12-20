@@ -14,6 +14,7 @@ import de.ddm.serialization.AkkaSerializable;
 import de.ddm.singletons.InputConfigurationSingleton;
 import de.ddm.singletons.SystemConfigurationSingleton;
 import de.ddm.structures.InclusionDependency;
+import de.ddm.structures.WorkDTO;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -21,7 +22,6 @@ import lombok.NoArgsConstructor;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Random;
 
 public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
@@ -69,7 +69,11 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
     public static class CompletionMessage implements Message {
         private static final long serialVersionUID = -7642425159675583598L;
         ActorRef<DependencyWorker.Message> dependencyWorker;
-        int result;
+        boolean result;
+        String[] dependentAttributes;
+        String[] referencedAttributes;
+        File firstFile;
+        File secondFile;
     }
 
     ////////////////////////
@@ -86,17 +90,18 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
     private DependencyMiner(ActorContext<Message> context) {
         super(context);
-        this.discoverNaryDependencies = SystemConfigurationSingleton.get().isHardMode();
-        this.inputFiles = InputConfigurationSingleton.get().getInputFiles();
-        this.headerLines = new String[this.inputFiles.length][];
+        discoverNaryDependencies = SystemConfigurationSingleton.get().isHardMode();
+        inputFiles = InputConfigurationSingleton.get().getInputFiles();
+        headerLines = new String[inputFiles.length][];
 
-        this.inputReaders = new ArrayList<>(inputFiles.length);
-        for (int id = 0; id < this.inputFiles.length; id++)
-            this.inputReaders.add(context.spawn(InputReader.create(id, this.inputFiles[id]), InputReader.DEFAULT_NAME + "_" + id));
-        this.resultCollector = context.spawn(ResultCollector.create(), ResultCollector.DEFAULT_NAME);
-        this.largeMessageProxy = this.getContext().spawn(LargeMessageProxy.create(this.getContext().getSelf().unsafeUpcast()), LargeMessageProxy.DEFAULT_NAME);
+        inputReaders = new ArrayList<>(inputFiles.length);
+        for (int id = 0; id < inputFiles.length; id++)
+            inputReaders.add(context.spawn(InputReader.create(id, inputFiles[id]), InputReader.DEFAULT_NAME + "_" + id));
+        resultCollector = context.spawn(ResultCollector.create(), ResultCollector.DEFAULT_NAME);
+        largeMessageProxy = getContext().spawn(LargeMessageProxy.create(getContext().getSelf().unsafeUpcast()), LargeMessageProxy.DEFAULT_NAME);
 
-        this.dependencyWorkers = new ArrayList<>();
+        idleDependencyWorkers = new ArrayList<>();
+        workingDependencyWorkers = new ArrayList<>();
 
         context.getSystem().receptionist().tell(Receptionist.register(dependencyMinerService, context.getSelf()));
     }
@@ -115,7 +120,15 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
     private final ActorRef<ResultCollector.Message> resultCollector;
     private final ActorRef<LargeMessageProxy.Message> largeMessageProxy;
 
-    private final List<ActorRef<DependencyWorker.Message>> dependencyWorkers;
+    private final List<ActorRef<DependencyWorker.Message>> idleDependencyWorkers;
+
+    private final List<ActorRef<DependencyWorker.Message>> workingDependencyWorkers;
+
+
+    private List<String[]> batchWhichHaveToProcess;
+
+    List<WorkDTO> combinations = new ArrayList<>();
+    List<WorkDTO> crossCombinations = new ArrayList<>();
 
     ////////////////////
     // Actor Behavior //
@@ -134,78 +147,125 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
     }
 
     private Behavior<Message> handle(StartMessage message) {
-        for (ActorRef<InputReader.Message> inputReader : this.inputReaders)
-            inputReader.tell(new InputReader.ReadHeaderMessage(this.getContext().getSelf()));
-        for (ActorRef<InputReader.Message> inputReader : this.inputReaders)
-            inputReader.tell(new InputReader.ReadBatchMessage(this.getContext().getSelf()));
-        this.startTime = System.currentTimeMillis();
+        for (ActorRef<InputReader.Message> inputReader : inputReaders)
+            inputReader.tell(new InputReader.ReadHeaderMessage(getContext().getSelf()));
+        for (ActorRef<InputReader.Message> inputReader : inputReaders)
+            inputReader.tell(new InputReader.ReadBatchMessage(getContext().getSelf()));
+
+        data = new BatchMessage[inputReaders.size()];
+        startTime = System.currentTimeMillis();
         return this;
     }
 
     private Behavior<Message> handle(HeaderMessage message) {
-        this.headerLines[message.getId()] = message.getHeader();
+        headerLines[message.getId()] = message.getHeader();
         return this;
     }
 
+    BatchMessage[] data;
+
+    /**
+     * New file content received, assigned idle workers to that new data
+     *
+     * @param message with file content as String[]
+     * @return new Behavior
+     */
     private Behavior<Message> handle(BatchMessage message) {
-        // Ignoring batch content for now ... but I could do so much with it.
 
-        if (message.getBatch().size() != 0)
-            this.inputReaders.get(message.getId()).tell(new InputReader.ReadBatchMessage(this.getContext().getSelf()));
-        return this;
-    }
+        //Stupides berechnen von Kombinationen
 
-    private Behavior<Message> handle(RegistrationMessage message) {
-        ActorRef<DependencyWorker.Message> dependencyWorker = message.getDependencyWorker();
-        if (!this.dependencyWorkers.contains(dependencyWorker)) {
-            this.dependencyWorkers.add(dependencyWorker);
-            this.getContext().watch(dependencyWorker);
-            // The worker should get some work ... let me send her something before I figure out what I actually want from her.
-            // I probably need to idle the worker for a while, if I do not have work for it right now ... (see master/worker pattern)
+        data[message.getId()] = message;
 
-            dependencyWorker.tell(new DependencyWorker.TaskMessage(this.largeMessageProxy, 42));
+        String[] headerLine = headerLines[message.getId()];
+
+        for (int i = 0; i < headerLine.length; i++) {
+
+            List<String> colOne = new ArrayList<>();
+            for (int ia = 0; ia < message.getBatch().size(); ia++) {
+                colOne.add(message.getBatch().get(ia)[i]);
+            }
+
+            for (WorkDTO workDTO : crossCombinations) {
+                if (!workDTO.getFirstHeader().equals(headerLine[i])) {
+                    combinations.add(new WorkDTO(inputFiles[message.getId()], headerLine[i], colOne, workDTO.getFirstFile(), workDTO.getFirstHeader(), workDTO.getFirstAttributes()));
+                    combinations.add(new WorkDTO(workDTO.getFirstFile(), workDTO.getFirstHeader(), workDTO.getFirstAttributes(), inputFiles[message.getId()], headerLine[i], colOne));
+                }
+            }
+
+            crossCombinations.add(new WorkDTO(inputFiles[message.getId()], headerLine[i], colOne, null, null, null));
+
+            for (int j = 0; j < headerLine.length; j++) {
+
+                List<String> colTwo = new ArrayList<>();
+                for (int ib = 0; ib < message.getBatch().size(); ib++) {
+                    colTwo.add(message.getBatch().get(ib)[j]);
+                }
+
+                if (i != j) {
+                    combinations.add(new WorkDTO(inputFiles[message.getId()], headerLine[i], colOne, inputFiles[message.getId()], headerLine[j], colTwo));
+                }
+
+            }
         }
         return this;
     }
 
-    private Behavior<Message> handle(CompletionMessage message) {
-        ActorRef<DependencyWorker.Message> dependencyWorker = message.getDependencyWorker();
-        // If this was a reasonable result, I would probably do something with it and potentially generate more work ... for now, let's just generate a random, binary IND.
+    /**
+     * RegistrationMessage from a worker that
+     *
+     * @param message with the ActorRef of the worker
+     * @return new Behavior
+     */
+    private Behavior<Message> handle(RegistrationMessage message) {
+        ActorRef<DependencyWorker.Message> newDependencyWorker = message.getDependencyWorker();
 
-        if (this.headerLines[0] != null) {
-            Random random = new Random();
-            int dependent = random.nextInt(this.inputFiles.length);
-            int referenced = random.nextInt(this.inputFiles.length);
-            File dependentFile = this.inputFiles[dependent];
-            File referencedFile = this.inputFiles[referenced];
-            String[] dependentAttributes = {this.headerLines[dependent][random.nextInt(this.headerLines[dependent].length)], this.headerLines[dependent][random.nextInt(this.headerLines[dependent].length)]};
-            String[] referencedAttributes = {this.headerLines[referenced][random.nextInt(this.headerLines[referenced].length)], this.headerLines[referenced][random.nextInt(this.headerLines[referenced].length)]};
-            InclusionDependency ind = new InclusionDependency(dependentFile, dependentAttributes, referencedFile, referencedAttributes);
+        newDependencyWorker.tell(new DependencyWorker.TaskMessage(this.largeMessageProxy, 1, combinations.remove(0)));
+
+        return this;
+    }
+
+    private void registerDependencyWorkerAsIdleWorker(ActorRef<DependencyWorker.Message> newDependencyWorker) {
+        if (!idleDependencyWorkers.contains(newDependencyWorker) || !workingDependencyWorkers.contains(newDependencyWorker)) {
+            idleDependencyWorkers.add(newDependencyWorker);
+            getContext().watch(newDependencyWorker);
+        }
+    }
+
+    /**
+     * A completion message from a worker was send. Validate the result and write it to the resultCollector
+     *
+     * @param message with the completion result of a worker
+     * @return new Behavior
+     */
+    private Behavior<Message> handle(CompletionMessage message) {
+
+        //Einfach durchlaufen bis alle Kombinationen getestet wurden
+
+        if (message.result) {
+            InclusionDependency ind = new InclusionDependency(message.getFirstFile(), message.getDependentAttributes(), message.getSecondFile(), message.getReferencedAttributes());
             List<InclusionDependency> inds = new ArrayList<>(1);
             inds.add(ind);
-
-            this.resultCollector.tell(new ResultCollector.ResultMessage(inds));
+            resultCollector.tell(new ResultCollector.ResultMessage(inds));
         }
-        // I still don't know what task the worker could help me to solve ... but let me keep her busy.
-        // Once I found all unary INDs, I could check if this.discoverNaryDependencies is set to true and try to detect n-ary INDs as well!
 
-        dependencyWorker.tell(new DependencyWorker.TaskMessage(this.largeMessageProxy, 42));
+        if (combinations.size() == 0) {
+            end();
+        }
 
-        // At some point, I am done with the discovery. That is when I should call my end method. Because I do not work on a completable task yet, I simply call it after some time.
-        if (System.currentTimeMillis() - this.startTime > 2000000)
-            this.end();
+        message.getDependencyWorker().tell(new DependencyWorker.TaskMessage(this.largeMessageProxy, 1, combinations.remove(0)));
+
         return this;
     }
 
     private void end() {
-        this.resultCollector.tell(new ResultCollector.FinalizeMessage());
-        long discoveryTime = System.currentTimeMillis() - this.startTime;
-        this.getContext().getLog().info("Finished mining within {} ms!", discoveryTime);
+        resultCollector.tell(new ResultCollector.FinalizeMessage());
+        long discoveryTime = System.currentTimeMillis() - startTime;
+        getContext().getLog().info("Finished mining within {} ms!", discoveryTime);
     }
 
     private Behavior<Message> handle(Terminated signal) {
         ActorRef<DependencyWorker.Message> dependencyWorker = signal.getRef().unsafeUpcast();
-        this.dependencyWorkers.remove(dependencyWorker);
+        idleDependencyWorkers.remove(dependencyWorker);
         return this;
     }
 }
