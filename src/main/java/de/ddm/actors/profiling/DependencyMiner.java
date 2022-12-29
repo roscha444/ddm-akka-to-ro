@@ -173,9 +173,6 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
      * @return new Behavior
      */
     private Behavior<Message> handle(BatchMessage message) {
-
-        //Stupides berechnen von Kombinationen
-
         data[message.getId()] = message;
 
         String[] headerLine = headerLines[message.getId()];
@@ -226,13 +223,6 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
         return this;
     }
 
-    private void registerDependencyWorkerAsIdleWorker(ActorRef<DependencyWorker.Message> newDependencyWorker) {
-        if (!idleDependencyWorkers.contains(newDependencyWorker) || !workingDependencyWorkers.contains(newDependencyWorker)) {
-            idleDependencyWorkers.add(newDependencyWorker);
-            getContext().watch(newDependencyWorker);
-        }
-    }
-
     /**
      * A completion message from a worker was send. Validate the result and write it to the resultCollector
      *
@@ -240,8 +230,6 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
      * @return new Behavior
      */
     private Behavior<Message> handle(CompletionMessage message) {
-
-        //Einfach durchlaufen bis alle Kombinationen getestet wurden
 
         if (message.result) {
             InclusionDependency ind = new InclusionDependency(message.getFirstFile(), message.getDependentAttributes(), message.getSecondFile(), message.getReferencedAttributes());
