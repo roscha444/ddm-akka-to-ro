@@ -62,6 +62,7 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
     public static class RegistrationMessage implements Message {
         private static final long serialVersionUID = -4025238529984914107L;
         ActorRef<DependencyWorker.Message> dependencyWorker;
+        ActorRef<LargeMessageProxy.Message> dependencyMinerLargeMessageProxy;
     }
 
     @Getter
@@ -79,6 +80,17 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
         int colIdB;
         int taskPerColCounter;
         int taskId;
+    }
+
+    @Getter
+    @AllArgsConstructor
+    public static class RequestDataForTaskMessage implements Message {
+        private static final long serialVersionUID = -1963913294517850454L;
+        ActorRef<DependencyWorker.Message> dependencyWorker;
+        int task;
+        boolean isA;
+        int from;
+        int to;
     }
 
     ////////////////////////
@@ -106,8 +118,9 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
         this.largeMessageProxy = this.getContext().spawn(LargeMessageProxy.create(this.getContext().getSelf().unsafeUpcast()), LargeMessageProxy.DEFAULT_NAME);
 
         this.dependencyWorkers = new ArrayList<>();
-        this.data = new ArrayList[this.inputReaders.size()][];
-        this.isReady = new boolean[this.inputReaders.size()];
+        this.dependencyWorkersLargeMessageProxy = new ArrayList<>();
+        this.batchData = new ArrayList[this.inputReaders.size()][];
+        this.readyForFile = new boolean[this.inputReaders.size()];
         context.getSystem().receptionist().tell(Receptionist.register(dependencyMinerService, context.getSelf()));
     }
 
@@ -127,6 +140,15 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
     private final List<ActorRef<DependencyWorker.Message>> dependencyWorkers;
 
+    private final List<ActorRef<LargeMessageProxy.Message>> dependencyWorkersLargeMessageProxy;
+    ArrayList<String>[][] batchData;
+    boolean[] readyForFile;
+    boolean allTasksComputed = false;
+    int currentTask = 0;
+    private final List<DependencyWorker.NewTaskMessage> tasks = new ArrayList();
+    boolean[][][] resultsSplitBySubTask;
+    int sizeOfA = 100000;
+
     ////////////////////
     // Actor Behavior //
     ////////////////////
@@ -139,8 +161,35 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
                 .onMessage(HeaderMessage.class, this::handle)
                 .onMessage(RegistrationMessage.class, this::handle)
                 .onMessage(CompletionMessage.class, this::handle)
+                .onMessage(RequestDataForTaskMessage.class, this::handle)
                 .onSignal(Terminated.class, this::handle)
                 .build();
+    }
+
+    private Behavior<Message> handle(RequestDataForTaskMessage message) {
+
+        DependencyWorker.NewTaskMessage taskMessage = this.tasks.get(message.task);
+        List<String> data;
+        if (message.isA) {
+            data = this.batchData[taskMessage.getFileIdA()][taskMessage.getColIdA()];
+            if (message.from > data.size()) {
+                data = new ArrayList<>();
+            } else {
+                data = data.subList(message.from, Math.min(message.to, data.size()));
+            }
+        } else {
+            data = this.batchData[taskMessage.getFileIdB()][taskMessage.getColIdB()];
+            if (message.from > data.size()) {
+                data = new ArrayList<>();
+            } else {
+                data = data.subList(message.from, Math.min(message.to, data.size()));
+            }
+        }
+
+        LargeMessageProxy.LargeMessage dataMessage = new DependencyWorker.DataMessage(message.getTask(), message.from, Math.min(message.to, data.size()), message.isA, data);
+        this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(dataMessage, this.dependencyWorkersLargeMessageProxy.get(this.dependencyWorkers.indexOf(message.dependencyWorker))));
+
+        return this;
     }
 
     private Behavior<Message> handle(StartMessage message) {
@@ -157,10 +206,10 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
         return this;
     }
 
-    ArrayList<String>[][] data;
-    boolean[] isReady;
 
     private Behavior<Message> handle(BatchMessage message) {
+        this.getContext().getLog().info("Read BatchMessage from {}", this.inputFiles[message.id].getName());
+
         List<String[]> batchRows = message.getBatch();
 
         if (batchRows.size() != 0) {
@@ -179,66 +228,53 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
                 cols[col] = new ArrayList<>(colValues);
             }
 
-            if (data[message.getId()] != null) {
+            if (batchData[message.getId()] != null) {
                 //Append the data to the existing data
                 for (int col = 0; col < cols.length; col++) {
-                    data[message.getId()][col].addAll(cols[col]);
+                    batchData[message.getId()][col].addAll(cols[col]);
                 }
             } else {
-                data[message.getId()] = cols;
+                batchData[message.getId()] = cols;
             }
 
             this.inputReaders.get(message.getId()).tell(new InputReader.ReadBatchMessage(this.getContext().getSelf()));
         } else {
             // file is empty, mark it as ready
-            this.isReady[message.getId()] = true;
+            this.readyForFile[message.getId()] = true;
 
-            boolean allReady = true;
-            for (boolean b : this.isReady) {
+            boolean allFilesReady = true;
+            for (boolean b : this.readyForFile) {
                 if (!b) {
-                    allReady = false;
+                    allFilesReady = false;
                     break;
                 }
             }
-            if (allReady) {
+            if (allFilesReady) {
                 computeTasks();
             }
         }
         return this;
     }
 
-    int sizeOfA = 10000;
-
-    @Getter
-    @NoArgsConstructor
-    @AllArgsConstructor
-    public static class Task {
-        int taskPerColCounter;
-        int fileIdA;
-        int colIdA;
-        int rowFromA;
-        int rowToA;
-        int fileIdB;
-        int colIdB;
-        List<String> colA;
-        List<String> colB;
-    }
-
-    private List<Task> tasksToDo = new ArrayList();
-
+    /**
+     * Compute the tasks on the data
+     */
     private void computeTasks() {
 
+        this.getContext().getLog().info("Compute tasks");
+
+
         //compute results list
-        results = new boolean[this.inputFiles.length][][];
+        resultsSplitBySubTask = new boolean[this.inputFiles.length][][];
 
 
         // Compute tasks
-        for (int fileIdA = 0; fileIdA < this.data.length; fileIdA++) {
+        for (int fileIdA = 0; fileIdA < this.batchData.length; fileIdA++) {
 
             // compute tasks within this table
-            List<String>[] tableA = this.data[fileIdA];
+            List<String>[] tableA = this.batchData[fileIdA];
 
-            results[fileIdA] = new boolean[tableA.length][];
+            resultsSplitBySubTask[fileIdA] = new boolean[tableA.length][];
 
             for (int colA = 0; colA < tableA.length; colA++) {
                 for (int colB = 0; colB < tableA.length; colB++) {
@@ -248,10 +284,10 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
                 }
             }
 
-            for (int fileIdB = 0; fileIdB < this.data.length; fileIdB++) {
+            for (int fileIdB = 0; fileIdB < this.batchData.length; fileIdB++) {
                 if (fileIdB != fileIdA) {
                     // compute tasks in combination to other table
-                    List<String>[] tableB = this.data[fileIdB];
+                    List<String>[] tableB = this.batchData[fileIdB];
 
                     for (int colA = 0; colA < tableA.length; colA++) {
                         for (int colB = 0; colB < tableB.length; colB++) {
@@ -263,29 +299,36 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
             }
 
         }
+        this.getContext().getLog().info("Computed {} tasks", this.tasks.size());
+        //TODO
         // All tasks computed
+        this.allTasksComputed = true;
         for (ActorRef<DependencyWorker.Message> dependencyWorker : this.dependencyWorkers) {
-            getNextTask(dependencyWorker);
+            sendNextTask(dependencyWorker);
         }
     }
 
-    private void getNextTask(ActorRef<DependencyWorker.Message> dependencyWorker) {
-        if (currentTask < this.tasksToDo.size()) {
-            Task todo = this.tasksToDo.get(currentTask);
-            dependencyWorker.tell(new DependencyWorker.TaskMessage(this.largeMessageProxy, currentTask, todo));
+
+    /**
+     * Send the next task to the DependencyWorker
+     */
+    private void sendNextTask(ActorRef<DependencyWorker.Message> dependencyWorker) {
+        if (currentTask < this.tasks.size()) {
+            DependencyWorker.NewTaskMessage task = this.tasks.get(currentTask);
+            LargeMessageProxy.LargeMessage taskMessage = new DependencyWorker.TaskMessage(this.largeMessageProxy, currentTask, task);
+            this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(taskMessage, this.dependencyWorkersLargeMessageProxy.get(this.dependencyWorkers.indexOf(dependencyWorker))));
             currentTask++;
         } else {
             this.end();
         }
     }
 
-    int currentTask = 0;
 
+    /**
+     * Split the task in subtask for parallelization. We can split A into smaller packages (Ai c B)
+     */
     private void splitTasks(int fileIdA, int colIdA, int fileIdB, int colIdB) {
-        // for parallelization, we can split A into smaller packages (A c B)
-        List<String> colA = this.data[fileIdA][colIdA];
-
-        List<String> colB = this.data[fileIdB][colIdB];
+        List<String> colA = this.batchData[fileIdA][colIdA];
 
         int taskPerColCounter = 0;
         for (int rowFromA = 0; rowFromA < colA.size(); rowFromA += sizeOfA) {
@@ -293,34 +336,35 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
             if (rowToA > colA.size()) {
                 rowToA = colA.size();
             }
-            tasksToDo.add(new Task(taskPerColCounter, fileIdA, colIdA, rowFromA, rowToA, fileIdB, colIdB, colA.subList(rowFromA, rowToA), colB));
+            tasks.add(new DependencyWorker.NewTaskMessage(taskPerColCounter, fileIdA, colIdA, rowFromA, rowToA, fileIdB, colIdB));
             taskPerColCounter++;
         }
-        results[fileIdA][colIdA] = new boolean[taskPerColCounter];
+        resultsSplitBySubTask[fileIdA][colIdA] = new boolean[taskPerColCounter];
     }
 
     private Behavior<Message> handle(RegistrationMessage message) {
         ActorRef<DependencyWorker.Message> dependencyWorker = message.getDependencyWorker();
         if (!this.dependencyWorkers.contains(dependencyWorker)) {
             this.dependencyWorkers.add(dependencyWorker);
+            this.dependencyWorkersLargeMessageProxy.add(message.getDependencyMinerLargeMessageProxy());
             this.getContext().watch(dependencyWorker);
-            // The worker should get some work ... let me send her something before I figure out what I actually want from her.
-            // I probably need to idle the worker for a while, if I do not have work for it right now ... (see master/worker pattern)
 
-            getNextTask(dependencyWorker);
+            if (allTasksComputed) {
+                //sendNextTask(dependencyWorker);
+            }
         }
         return this;
     }
 
-    boolean[][][] results;
-
+    /**
+     * Task is competed from DependencyWorker. Check if all subtasks are completed and calculate the result.
+     */
     private Behavior<Message> handle(CompletionMessage message) {
         ActorRef<DependencyWorker.Message> dependencyWorker = message.getDependencyWorker();
 
-        getNextTask(dependencyWorker);
-
+        sendNextTask(dependencyWorker);
         boolean result = message.getResult() == 1;
-        boolean[] resultForThisCol = results[message.getFileIdA()][message.getColIdA()];
+        boolean[] resultForThisCol = resultsSplitBySubTask[message.getFileIdA()][message.getColIdA()];
         resultForThisCol[message.taskPerColCounter] = result;
 
         boolean allTrue = true;
