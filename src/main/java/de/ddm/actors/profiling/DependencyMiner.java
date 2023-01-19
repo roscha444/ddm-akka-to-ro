@@ -112,8 +112,10 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
         this.headerLines = new String[this.inputFiles.length][];
 
         this.inputReaders = new ArrayList<>(inputFiles.length);
+
         for (int id = 0; id < this.inputFiles.length; id++)
             this.inputReaders.add(context.spawn(InputReader.create(id, this.inputFiles[id]), InputReader.DEFAULT_NAME + "_" + id));
+
         this.resultCollector = context.spawn(ResultCollector.create(), ResultCollector.DEFAULT_NAME);
         this.largeMessageProxy = this.getContext().spawn(LargeMessageProxy.create(this.getContext().getSelf().unsafeUpcast()), LargeMessageProxy.DEFAULT_NAME);
 
@@ -147,7 +149,7 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
     int currentTask = 0;
     private final List<DependencyWorker.NewTaskMessage> tasks = new ArrayList();
     boolean[][][] resultsSplitBySubTask;
-    int sizeOfA = 100000;
+    int sizeOfA = 50000;
 
     ////////////////////
     // Actor Behavior //
@@ -314,7 +316,7 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
      * Send the next task to the DependencyWorker
      */
     private void sendNextTask(ActorRef<DependencyWorker.Message> dependencyWorker, int taskId) {
-        if (currentTask <= this.tasks.size()) {
+        if (currentTask < this.tasks.size()) {
             DependencyWorker.NewTaskMessage task = this.tasks.get(currentTask);
             LargeMessageProxy.LargeMessage taskMessage = new DependencyWorker.TaskMessage(this.largeMessageProxy, currentTask, task);
             this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(taskMessage, this.dependencyWorkersLargeMessageProxy.get(this.dependencyWorkers.indexOf(dependencyWorker))));
@@ -322,7 +324,7 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
             this.lastWorker = dependencyWorker;
         } else {
             this.getContext().getLog().info("All tasks are done, waiting for last job to complete");
-            if (taskId == currentTask) {
+            if (taskId == currentTask - 1) {
                 this.getContext().getLog().info("Last task completed!");
                 this.end();
             }
