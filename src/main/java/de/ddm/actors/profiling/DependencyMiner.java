@@ -304,22 +304,28 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
         // All tasks computed
         this.allTasksComputed = true;
         for (ActorRef<DependencyWorker.Message> dependencyWorker : this.dependencyWorkers) {
-            sendNextTask(dependencyWorker);
+            sendNextTask(dependencyWorker, -1);
         }
     }
 
+    ActorRef<DependencyWorker.Message> lastWorker;
 
     /**
      * Send the next task to the DependencyWorker
      */
-    private void sendNextTask(ActorRef<DependencyWorker.Message> dependencyWorker) {
-        if (currentTask < this.tasks.size()) {
+    private void sendNextTask(ActorRef<DependencyWorker.Message> dependencyWorker, int taskId) {
+        if (currentTask <= this.tasks.size()) {
             DependencyWorker.NewTaskMessage task = this.tasks.get(currentTask);
             LargeMessageProxy.LargeMessage taskMessage = new DependencyWorker.TaskMessage(this.largeMessageProxy, currentTask, task);
             this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(taskMessage, this.dependencyWorkersLargeMessageProxy.get(this.dependencyWorkers.indexOf(dependencyWorker))));
             currentTask++;
+            this.lastWorker = dependencyWorker;
         } else {
-            this.end();
+            this.getContext().getLog().info("All tasks are done, waiting for last job to complete");
+            if (taskId == currentTask) {
+                this.getContext().getLog().info("Last task completed!");
+                this.end();
+            }
         }
     }
 
@@ -350,7 +356,7 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
             this.getContext().watch(dependencyWorker);
 
             if (allTasksComputed) {
-                //sendNextTask(dependencyWorker);
+                sendNextTask(dependencyWorker, -1);
             }
         }
         return this;
@@ -362,7 +368,6 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
     private Behavior<Message> handle(CompletionMessage message) {
         ActorRef<DependencyWorker.Message> dependencyWorker = message.getDependencyWorker();
 
-        sendNextTask(dependencyWorker);
         boolean result = message.getResult() == 1;
         boolean[] resultForThisCol = resultsSplitBySubTask[message.getFileIdA()][message.getColIdA()];
         resultForThisCol[message.taskPerColCounter] = result;
@@ -390,6 +395,8 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
             this.resultCollector.tell(new ResultCollector.ResultMessage(inds));
         }
+
+        sendNextTask(dependencyWorker, message.getTaskId());
 
         return this;
     }
