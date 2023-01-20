@@ -12,6 +12,7 @@ import de.ddm.serialization.AkkaSerializable;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+import lombok.Setter;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -37,7 +38,11 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 
     @Getter
     @AllArgsConstructor
-    public static class NewTaskMessage implements Message, LargeMessageProxy.LargeMessage {
+    @Setter
+    public static class TaskMessage implements Message, LargeMessageProxy.LargeMessage {
+        private static final long serialVersionUID = -4667745204456518160L;
+        ActorRef<LargeMessageProxy.Message> dependencyMinerLargeMessageProxy;
+        int taskId;
         int taskPerColCounter;
         int fileIdA;
         int colIdA;
@@ -45,16 +50,8 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
         int rowToA;
         int fileIdB;
         int colIdB;
-    }
-
-    @Getter
-    @NoArgsConstructor
-    @AllArgsConstructor
-    public static class TaskMessage implements Message, LargeMessageProxy.LargeMessage {
-        private static final long serialVersionUID = -4667745204456518160L;
-        ActorRef<LargeMessageProxy.Message> dependencyMinerLargeMessageProxy;
-        int taskId;
-        NewTaskMessage newTaskMessage;
+        int amountColumnA;
+        int amountColumnB;
     }
 
     @Getter
@@ -62,10 +59,11 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
     public static class DataMessage implements Message, LargeMessageProxy.LargeMessage {
         private static final long serialVersionUID = -4667745204456518160L;
         int taskId;
+        int fileId;
+        int colId;
         int from;
         int to;
-        boolean isA;
-        List<String> data;
+        HashSet<String> data;
     }
 
     ////////////////////////
@@ -83,6 +81,22 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 
         final ActorRef<Receptionist.Listing> listingResponseAdapter = context.messageAdapter(Receptionist.Listing.class, ReceptionistListingMessage::new);
         context.getSystem().receptionist().tell(Receptionist.subscribe(DependencyMiner.dependencyMinerService, listingResponseAdapter));
+
+        this.batchData.add(new ArrayList<>());
+        this.batchData.add(new ArrayList<>());
+        this.batchData.add(new ArrayList<>());
+        this.batchData.add(new ArrayList<>());
+        this.batchData.add(new ArrayList<>());
+        this.batchData.add(new ArrayList<>());
+        this.batchData.add(new ArrayList<>());
+
+        this.batchDataReady.add(new ArrayList<>());
+        this.batchDataReady.add(new ArrayList<>());
+        this.batchDataReady.add(new ArrayList<>());
+        this.batchDataReady.add(new ArrayList<>());
+        this.batchDataReady.add(new ArrayList<>());
+        this.batchDataReady.add(new ArrayList<>());
+        this.batchDataReady.add(new ArrayList<>());
 
         this.largeMessageProxy = this.getContext().spawn(LargeMessageProxy.create(this.getContext().getSelf().unsafeUpcast()), LargeMessageProxy.DEFAULT_NAME);
     }
@@ -116,43 +130,64 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
     int sizeOfDataToSend = 10000;
 
     private Behavior<Message> handle(TaskMessage message) {
-
-        LargeMessageProxy.LargeMessage requestDataMessageA = new DependencyMiner.RequestDataForTaskMessage(this.getContext().getSelf(), message.getTaskId(), true, 0, sizeOfDataToSend);
-        this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(requestDataMessageA, message.getDependencyMinerLargeMessageProxy()));
-
-        LargeMessageProxy.LargeMessage requestDataMessageB = new DependencyMiner.RequestDataForTaskMessage(this.getContext().getSelf(), message.getTaskId(), false, 0, sizeOfDataToSend);
-        this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(requestDataMessageB, message.getDependencyMinerLargeMessageProxy()));
-
         taskMessage = message;
+
+        this.getContext().getLog().info("New Task! {}. Requesting data...", message.getTaskId());
+
+        if (this.batchData.get(message.getFileIdA()).isEmpty()) {
+            for (int i = 0; i < message.getAmountColumnA(); i++) {
+                this.batchData.get(message.getFileIdA()).add(new HashSet<>());
+                this.batchDataReady.get(message.getFileIdA()).add(false);
+            }
+        }
+
+        if (this.batchData.get(message.getFileIdB()).isEmpty()) {
+            for (int j = 0; j < message.getAmountColumnB(); j++) {
+                this.batchData.get(message.getFileIdB()).add(new HashSet<>());
+                this.batchDataReady.get(message.getFileIdB()).add(false);
+            }
+        }
+
+        if (!batchReady(taskMessage.getFileIdA(), taskMessage.getColIdA())) {
+            LargeMessageProxy.LargeMessage requestDataMessageA = new DependencyMiner.RequestDataForTaskMessage(this.getContext().getSelf(), message.getTaskId(), message.getFileIdA(), message.getColIdA(), 0, sizeOfDataToSend);
+            this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(requestDataMessageA, message.getDependencyMinerLargeMessageProxy()));
+        }
+
+        if (!batchReady(taskMessage.getFileIdB(), taskMessage.getColIdB())) {
+            LargeMessageProxy.LargeMessage requestDataMessageB = new DependencyMiner.RequestDataForTaskMessage(this.getContext().getSelf(), message.getTaskId(), message.getFileIdB(), message.getColIdB(), 0, sizeOfDataToSend);
+            this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(requestDataMessageB, message.getDependencyMinerLargeMessageProxy()));
+        }
+
+        if (batchReady(taskMessage.getFileIdB(), taskMessage.getColIdB()) && batchReady(taskMessage.getFileIdA(), taskMessage.getColIdA())) {
+            work();
+        }
 
         return this;
     }
 
+    private Boolean batchReady(int taskMessage, int taskMessage1) {
+        return batchDataReady.get(taskMessage).get(taskMessage1);
+    }
+
     TaskMessage taskMessage;
-    List<String> colA = new ArrayList<>();
-    List<String> colB = new ArrayList<>();
-    boolean isAComplete;
-    boolean isBComplete;
+    List<List<HashSet<String>>> batchData = new ArrayList<>();
+    List<List<Boolean>> batchDataReady = new ArrayList<>();
 
     private Behavior<Message> handle(DataMessage message) {
         if (!message.data.isEmpty()) {
-            LargeMessageProxy.LargeMessage requestDataMessage;
-            if (message.isA) {
-                colA.addAll(message.getData());
-                requestDataMessage = new DependencyMiner.RequestDataForTaskMessage(this.getContext().getSelf(), message.getTaskId(), message.isA, colA.size(), colA.size() + sizeOfDataToSend);
-            } else {
-                colB.addAll(message.getData());
-                requestDataMessage = new DependencyMiner.RequestDataForTaskMessage(this.getContext().getSelf(), message.getTaskId(), message.isA, colB.size(), colB.size() + sizeOfDataToSend);
-            }
+
+            //TODO if data is already loaded
+
+            batchData.get(message.getFileId()).get(message.getColId()).addAll(message.getData());
+
+            int storedSize = batchData.get(message.getFileId()).get(message.getColId()).size();
+            LargeMessageProxy.LargeMessage requestDataMessage = new DependencyMiner.RequestDataForTaskMessage(this.getContext().getSelf(), message.getTaskId(), message.getFileId(), message.getColId(), storedSize, storedSize + sizeOfDataToSend);
             this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(requestDataMessage, taskMessage.getDependencyMinerLargeMessageProxy()));
         } else {
-            if (message.isA) {
-                isAComplete = true;
-            } else {
-                isBComplete = true;
-            }
 
-            if (isAComplete && isBComplete) {
+            batchDataReady.get(message.getFileId()).set(message.getColId(), true);
+
+            if (batchReady(taskMessage.getFileIdB(), taskMessage.getColIdB()) && batchReady(taskMessage.getFileIdA(), taskMessage.getColIdA())) {
                 work();
             }
         }
@@ -162,17 +197,22 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
     }
 
     private void work() {
-        this.getContext().getLog().info("Working! {} {}", taskMessage.getTaskId(), taskMessage.getNewTaskMessage().getTaskPerColCounter());
+        this.getContext().getLog().info("Working! {} {}", taskMessage.getTaskId(), taskMessage.getTaskPerColCounter());
 
-        NewTaskMessage newTaskMessage = taskMessage.getNewTaskMessage();
+        int result = batchData.get(taskMessage.getFileIdB()).get(taskMessage.getColIdB()).containsAll(batchData.get(taskMessage.getFileIdA()).get(taskMessage.getColIdA())) ? 1 : 0;
 
-        int result = new HashSet<>(colB).containsAll(colA) ? 1 : 0;
-        colA = new ArrayList<>();
-        colB = new ArrayList<>();
-        isBComplete = false;
-        isAComplete = false;
+        LargeMessageProxy.LargeMessage completionMessage = new DependencyMiner.CompletionMessage(
+                this.getContext().getSelf(),
+                result,
+                taskMessage.getFileIdA(),
+                taskMessage.getColIdA(),
+                taskMessage.rowFromA,
+                taskMessage.rowToA,
+                taskMessage.getFileIdB(),
+                taskMessage.getColIdB(),
+                taskMessage.taskPerColCounter,
+                taskMessage.getTaskId());
 
-        LargeMessageProxy.LargeMessage completionMessage = new DependencyMiner.CompletionMessage(this.getContext().getSelf(), result, newTaskMessage.getFileIdA(), newTaskMessage.getColIdA(), newTaskMessage.rowFromA, newTaskMessage.rowToA, newTaskMessage.getFileIdB(), newTaskMessage.getColIdB(), newTaskMessage.taskPerColCounter, taskMessage.getTaskId());
         this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(completionMessage, taskMessage.getDependencyMinerLargeMessageProxy()));
     }
 }
